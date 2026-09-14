@@ -1,11 +1,15 @@
 :root {
   color-scheme: dark;
-  --bg: #101408;
-  --card: #1a2012;
-  --line: #33402a;
-  --fg: #d7e6c3;
-  --muted: #8a9678;
-  --accent: #9bbc0f;
+  --sh0: #9bbc0f;
+  --sh1: #8bac0f;
+  --sh2: #306230;
+  --sh3: #0f380f;
+  --bg: var(--sh3);
+  --card: #16240f;
+  --line: var(--sh2);
+  --fg: var(--sh0);
+  --muted: #5f7326;
+  --accent: var(--sh1);
   --warn: #e0a100;
   --err: #ff6b5e;
 }
@@ -31,6 +35,20 @@ header h1 {
   margin: 0;
   font-size: 22px;
   color: var(--accent);
+}
+
+.iconbtn {
+  font-size: 15px;
+  white-space: nowrap;
+}
+
+.closerow {
+  margin-bottom: 8px;
+}
+
+.rail {
+  flex-shrink: 0;
+  align-self: flex-start;
 }
 
 .mono {
@@ -84,15 +102,28 @@ header h1 {
   background: var(--accent);
 }
 
-.grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+.layout {
+  display: flex;
   gap: 12px;
+  align-items: flex-start;
+}
+
+.sidebar {
+  width: 320px;
+  flex-shrink: 0;
+}
+
+.stage {
+  flex: 1;
+  min-width: 0;
 }
 
 @media (max-width: 900px) {
-  .grid {
-    grid-template-columns: 1fr;
+  .layout {
+    flex-direction: column;
+  }
+  .sidebar {
+    width: 100%;
   }
 }
 
@@ -192,6 +223,31 @@ progress {
   background: #000;
   border: 1px solid var(--line);
   border-radius: 4px;
+}
+
+.stagerow {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.stagerow .screen {
+  flex: 3;
+  min-width: 0;
+}
+
+.sidecontrols {
+  flex: 2;
+  min-width: 0;
+}
+
+@media (max-width: 700px) {
+  .stagerow {
+    flex-direction: column;
+  }
+  .sidecontrols {
+    width: 100%;
+  }
 }
 
 .dpad {

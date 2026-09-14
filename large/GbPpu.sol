@@ -324,16 +324,103 @@ abstract contract GbPpu is GbTimer {
             mstore(0, oam.slot)
             if mld(scratch, 17) { yScan(scratch, keccak256(0, 0x20), lyv) }
             let nSpr0 := mld(scratch, 15)
+            // ---- flat pixel loop (yBg/yWin/yPix inlined: no per-pixel calls;
+            //      per-pixel values stay in scratch, as before) ----
             for { let x := 0 } lt(x, 160) { x := add(x, 1) } {
-                let sh, bgi := yBg(scratch, vbase, x)
+                let bgIdx := 0
+                let shade := and(bgp_, 3)
+                if bgOn_ {
+                    let useWin := 0
+                    let px := 0
+                    let row := mload(add(scratch, 128))
+                    let mapBase := mload(add(scratch, 0))
+                    if mload(add(scratch, 192)) {
+                        let wxv := mload(add(scratch, 224))
+                        if iszero(slt(x, sub(wxv, 7))) {
+                            useWin := 1
+                            px := and(add(sub(x, wxv), 7), 0xff)
+                            row := mload(add(scratch, 160))
+                            mapBase := mload(add(scratch, 32))
+                        }
+                    }
+                    if iszero(useWin) {
+                        px := and(add(mload(add(scratch, 96)), x), 0xff)
+                    }
+                    let mapAddr := add(add(mapBase, shl(5, shr(3, row))), shr(3, px))
+                    let key := or(shl(3, mapAddr), and(row, 7))
+                    let lo := 0
+                    let hi := 0
+                    if eq(key, mload(add(scratch, 416))) {
+                        let cpx := mload(add(scratch, 448))
+                        lo := and(shr(8, cpx), 0xff)
+                        hi := and(cpx, 0xff)
+                    }
+                    if iszero(eq(key, mload(add(scratch, 416)))) {
+                        let maddr := sub(mapAddr, 0x8000)
+                        let tileIdx := byte(mod(maddr, 32), sload(add(vbase, div(maddr, 32))))
+                        let troff := 0
+                        if mload(add(scratch, 256)) {
+                            troff :=
+                                add(
+                                    add(0x1000, mul(signextend(0, tileIdx), 16)),
+                                    mul(and(row, 7), 2)
+                                )
+                        }
+                        if iszero(mload(add(scratch, 256))) {
+                            troff := add(mul(tileIdx, 16), mul(and(row, 7), 2))
+                        }
+                        lo := byte(mod(troff, 32), sload(add(vbase, div(troff, 32))))
+                        hi := byte(mod(add(troff, 1), 32), sload(add(vbase, div(add(troff, 1), 32))))
+                        mstore(add(scratch, 416), key)
+                        mstore(add(scratch, 448), or(shl(8, lo), hi))
+                    }
+                    let bit := sub(7, and(px, 7))
+                    bgIdx := or(shl(1, and(shr(bit, hi), 1)), and(shr(bit, lo), 1))
+                    shade := and(shr(mul(bgIdx, 2), bgp_), 3)
+                }
                 if nSpr0 {
-                    let wi := yWin(scratch, x)
-                    if iszero(eq(wi, 10)) {
-                        let sps, sph := yPix(scratch, vbase, wi, x, bgi)
-                        if sph { sh := sps }
+                    let bi := 10
+                    let wBest := 300
+                    for { let j := 0 } lt(j, nSpr0) { j := add(j, 1) } {
+                        let wox := shr(24, mload(add(mload(add(scratch, 512)), mul(j, 32))))
+                        let wxx := add(x, 8)
+                        if and(iszero(lt(wxx, wox)), lt(wxx, add(wox, 8))) {
+                            if lt(wox, wBest) {
+                                wBest := wox
+                                bi := j
+                            }
+                        }
+                    }
+                    if iszero(eq(bi, 10)) {
+                        let pw := mload(add(mload(add(scratch, 512)), mul(bi, 32)))
+                        let pox := shr(24, pw)
+                        let tile := and(shr(16, pw), 0xff)
+                        let attr := and(shr(8, pw), 0xff)
+                        let srow := and(pw, 0xff)
+                        let sprH2 := mload(add(scratch, 320))
+                        if and(attr, 0x40) { srow := sub(sub(sprH2, 1), srow) }
+                        if eq(sprH2, 16) {
+                            if lt(srow, 8) { tile := and(tile, 0xFE) }
+                            if iszero(lt(srow, 8)) { tile := or(tile, 1) }
+                            if iszero(lt(srow, 8)) { srow := sub(srow, 8) }
+                        }
+                        let toff := add(mul(tile, 16), mul(srow, 2))
+                        let plo := byte(mod(toff, 32), sload(add(vbase, div(toff, 32))))
+                        let phi := byte(mod(add(toff, 1), 32), sload(add(vbase, div(add(toff, 1), 32))))
+                        let pdx := sub(add(x, 8), pox)
+                        let pbit := sub(7, pdx)
+                        if and(attr, 0x20) { pbit := pdx }
+                        let spIdx := or(shl(1, and(shr(pbit, phi), 1)), and(shr(pbit, plo), 1))
+                        if iszero(iszero(spIdx)) {
+                            if iszero(and(iszero(iszero(and(attr, 0x80))), iszero(iszero(bgIdx)))) {
+                                let pal := mload(add(scratch, 352))
+                                if and(attr, 0x10) { pal := mload(add(scratch, 384)) }
+                                shade := and(shr(mul(spIdx, 2), pal), 3)
+                            }
+                        }
                     }
                 }
-                mstore8(add(rowPtr, x), sh)
+                mstore8(add(rowPtr, x), shade)
             }
             winInc := mld(scratch, 6)
         }

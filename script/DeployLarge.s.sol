@@ -2,25 +2,25 @@
 pragma solidity ^0.8.20;
 
 import "forge-std/Script.sol";
-import "../monad/GameBoy.sol";
-import "../monad/GameBoyFactory.sol";
+import "../large/GameBoy.sol";
+import "../large/GameBoyFactory.sol";
 
-/// @notice Deploy the Monad build (full features + factory init flow).
-///         Monad's 128KB code limit fits the full GameBoy (no slimming).
-///         Requires nightly Foundry with Monad support; the monad profile
-///         sets `network = "monad"` so builds/scripts follow Monad rules.
-///         Run against Monad testnet (funded key) or local Anvil:
-///           anvil --network monad --gas-limit 100000000 &
-///           FOUNDRY_PROFILE=monad forge script script/DeployMonad.s.sol \
+/// @notice Deploy the large build (full features + factory init flow).
+///         Targets big-limit chains (Monad 128KB, Robinhood 96KB) — no
+///         slimming needed. Select the network per command
+///         (e.g. `--network monad`); the large profile stays neutral.
+///         Run against Monad testnet (funded key) or local Anvil
+///         (`anvil --network monad` for Monad rules):
+///           FOUNDRY_PROFILE=large forge script script/DeployLarge.s.sol \
 ///             --rpc-url $RPC_URL --broadcast --private-key $DEPLOY_KEY
 ///         (local: replace key flags with `--unlocked --sender <addr>`).
 ///         Writes frontend/.env with the deployed addresses. The UI speaks
-///         the slim API subset, which monad/GameBoy implements with identical
+///         the slim API subset, which large/GameBoy implements with identical
 ///         signatures — no frontend changes needed; optionally refresh its
 ///         ABIs for the extra views (getState, loadRomChunk, ...):
-///           jq .abi out-monad/GameBoy.sol/GameBoy.json > frontend/src/abi/GameBoy.json
-///           jq .abi out-monad/GameBoyFactory.sol/GameBoyFactory.json > frontend/src/abi/GameBoyFactory.json
-contract DeployMonad is Script {
+///           jq .abi out-large/GameBoy.sol/GameBoy.json > frontend/src/abi/GameBoy.json
+///           jq .abi out-large/GameBoyFactory.sol/GameBoyFactory.json > frontend/src/abi/GameBoyFactory.json
+contract DeployLarge is Script {
     function run() external {
         vm.startBroadcast();
         GameBoy impl = new GameBoy(); // born bricked (owner = DEAD sink)

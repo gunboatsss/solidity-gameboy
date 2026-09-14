@@ -4,9 +4,10 @@ pragma solidity ^0.8.20;
 import "./GameBoy.sol";
 
 /// @title GameBoyFactory — trustless crowdplay games via EIP-1167 clones.
-/// @notice Monad build: the full-featured GameBoy (storage + SSTORE2 ROM,
-///         getState, helper views) fits Monad's 128KB code limit, so no
-///         slimming is needed — only the factory init flow is ported.
+/// @notice Large build: the full-featured GameBoy (storage + SSTORE2 ROM,
+///         getState, helper views) fits big-limit chains (Monad 128KB,
+///         Robinhood 96KB), so no slimming is needed — only the factory
+///         init flow is ported.
 ///         create() deploys a 45-byte minimal proxy to the implementation,
 ///         owned by the caller, who then uploads the ROM (storage chunks via
 ///         loadRomChunk + finalizeLoad, or SSTORE2 stores via

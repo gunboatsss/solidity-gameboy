@@ -6,8 +6,10 @@ out of the box.
 ## Quickstart
 
 ```sh
-# 1. start a local chain (raised cap: runFrame-as-call needs ~40M)
-anvil --gas-limit 100000000 &
+# 1. start a local chain (raised cap: runFrame-as-call needs ~40M;
+#    fixed price: sustained full blocks would otherwise spiral the base fee
+#    until the burner can't pay — this bit us once at 2800 gwei)
+anvil --network monad --gas-limit 100000000 --gas-price 1000000000 &
 
 # 2. deploy impl + factory (writes frontend/.env with addresses;
 #    Anvil dev accounts are unlocked, so no private key is needed)
@@ -83,12 +85,35 @@ contract change (the live golden check fails loudly if they drift).
 - Default Anvil (30M block gas) fits every tx: steps ~10M, chunks ~3.5M.
   `preview (call)` simulates `runFrame` (~40M), so start Anvil with
   `--gas-limit 100000000`. The step loop is the way to actually play.
-- Burner mode uses Anvil key #0 — override with `VITE_BURNER_KEY` if your
-  Anvil build prints different dev keys (check its startup log).
-- Game list reads `GameCreated` logs from genesis (fine on Anvil).
+- Burner keys: "use burner key" signs with the funded local default;
+  "new burner" generates a random key, stores it in this browser, and
+  uses it. It starts empty, so fund it before spending anywhere public.
 - ABIs in `src/abi/` are extracted from forge artifacts; refresh with
   `jq .abi out-slim/GameBoy.sol/GameBoy.json > frontend/src/abi/GameBoy.json`
   (same for the factory) after contract changes.
+
+## Deployment matrix
+
+| Target | Chain ID | Build (code limit) | Deploy with |
+| --- | --- | --- | --- |
+| Local Anvil | 31337 | slim (24KB) | `Deploy.s.sol` |
+| ETH Mainnet | 1 | slim (24KB) | `Deploy.s.sol` + funded key |
+| Base | 8453 | slim (24KB) | `Deploy.s.sol` + funded key |
+| Monad | 143 | large (128KB) | `DeployLarge.s.sol` + funded key |
+| Monad Testnet | 10143 | large (128KB) | `DeployLarge.s.sol`, faucet MON |
+| Robinhood Chain | 4663 | large (96KB fits 30.7KB) | `DeployLarge.s.sol` + bridged ETH |
+| Robinhood Testnet | 46630 | large (96KB) | `DeployLarge.s.sol`, faucet ETH |
+
+Robinhood notes: per-tx cap is queried live from the ArbGasInfo
+precompile (`getMaxTxGasLimit`, verified 32M on testnet) and shown in the
+connect bar; step gas is estimate + 25% capped against it. `runFrame`
+(~41M) still exceeds it, so stepping stays mandatory at `step(20000)`.
+
+After deploying to a chain, put its addresses in `.env` as
+`VITE_FACTORY_<id>` / `VITE_IMPL_<id>` (see `.env.example`) and pick the
+network in the UI dropdown. Switching networks disconnects the signer —
+reconnect on the new chain. Games are cached per chain in localStorage;
+`VITE_GAMES_FROM_BLOCK` bounds the on-chain scan where history is limited.
 
 ## Monad
 

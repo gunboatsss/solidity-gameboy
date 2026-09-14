@@ -9,12 +9,15 @@ import {
 import type { Log } from 'viem';
 import type { Signer } from './eth';
 import { chain, publicClient } from './eth';
-import { ACTIVE, FACTORY_ADDRESS, GAMES_FROM_BLOCK } from './config';
+import { activeChainId, activePreset, factoryAddress, GAMES_FROM_BLOCK } from './config';
 import GameBoyAbi from './abi/GameBoy.json';
 import FactoryAbi from './abi/GameBoyFactory.json';
+import { parseRomMeta } from './rom';
 
 export const CHUNK = 0x4000;
-export const STEP_BUDGET = ACTIVE.stepBudget;
+export function stepBudget(): number {
+  return activePreset().stepBudget;
+}
 // Fixed step gas (Anvil/Ethereum default): 16M covers the worst-measured
 // ~10M step with headroom while staying under the 16.7M EIP-7825 cap.
 // Steps are atomic (full budget or revert), so the limit only needs to
@@ -55,13 +58,18 @@ export interface GameInfo {
   game: `0x${string}`;
   creator: `0x${string}`;
   romHash: `0x${string}`;
+  title?: string;
 }
 
 const LS_GAMES = 'sgb.games';
 
+function cacheKey(): string {
+  return `${LS_GAMES}.${activeChainId()}`;
+}
+
 function readGameCache(): GameInfo[] {
   try {
-    const raw = JSON.parse(localStorage.getItem(LS_GAMES) ?? '[]') as unknown;
+    const raw = JSON.parse(localStorage.getItem(cacheKey()) ?? '[]') as unknown;
     if (!Array.isArray(raw)) return [];
     return raw.filter(
       (g): g is GameInfo =>
@@ -72,13 +80,40 @@ function readGameCache(): GameInfo[] {
   }
 }
 
-export function cacheGame(game: `0x${string}`, creator: `0x${string}`): void {
+export function cacheGame(game: `0x${string}`, creator: `0x${string}`, title = ''): void {
   try {
     const cur = readGameCache().filter((g) => g.game.toLowerCase() !== game.toLowerCase());
-    cur.push({ game, creator, romHash: '0x0000000000000000000000000000000000000000000000000000000000000000' });
-    localStorage.setItem(LS_GAMES, JSON.stringify(cur.slice(-50)));
+    cur.push({ game, creator, romHash: '0x0000000000000000000000000000000000000000000000000000000000000000', title });
+    localStorage.setItem(cacheKey(), JSON.stringify(cur.slice(-50)));
   } catch {
     /* private mode etc: list stays on-chain only */
+  }
+}
+
+/** Read a booted game's title from its first ROM store (SSTORE2 code read).
+ *  Empty string when unavailable (unbooted game, storage-path ROM). */
+export async function fetchRomTitle(game: `0x${string}`): Promise<string> {
+  try {
+    const store = (await publicClient.readContract({
+      address: game,
+      abi: GameBoyAbi,
+      functionName: 'romStore',
+      args: [0],
+    })) as `0x${string}`;
+    const code = await publicClient.getCode({ address: store });
+    if (!code || code.length < 2 + (0x144 + 1) * 2) return '';
+    return parseRomMeta(hexToBytes(code).slice(1)).title;
+  } catch {
+    return '';
+  }
+}
+
+export function removeGameCache(game: `0x${string}`): void {
+  try {
+    const cur = readGameCache().filter((g) => g.game.toLowerCase() !== game.toLowerCase());
+    localStorage.setItem(cacheKey(), JSON.stringify(cur));
+  } catch {
+    /* ignore */
   }
 }
 
@@ -87,7 +122,7 @@ export async function listGames(): Promise<GameInfo[]> {
   for (const g of readGameCache()) seen.set(g.game.toLowerCase(), g);
   try {
     const logs = await publicClient.getLogs({
-      address: FACTORY_ADDRESS,
+      address: factoryAddress(),
       event: GAME_CREATED,
       fromBlock: GAMES_FROM_BLOCK ?? 0n,
       toBlock: 'latest',
@@ -106,16 +141,44 @@ export async function listGames(): Promise<GameInfo[]> {
   return [...seen.values()];
 }
 
+const ARB_GAS_INFO = '0x000000000000000000000000000000000000006c' as const;
+const ARB_MAX_TX_GAS = parseAbiItem('function getMaxTxGasLimit() view returns (uint256)');
+
+const maxTxCache = new Map<number, bigint>();
+
+/** Max tx gas limit on Arbitrum Orbit chains, via the ArbGasInfo precompile.
+ *  Cached per chain; null when unavailable (non-Orbit chains, RPC limits). */
+export async function maxTxGasLimit(): Promise<bigint | null> {
+  if (!activePreset().arbOrbit) return null;
+  const id = activeChainId();
+  const hit = maxTxCache.get(id);
+  if (hit !== undefined) return hit;
+  try {
+    const v = (await publicClient.readContract({
+      address: ARB_GAS_INFO,
+      abi: [ARB_MAX_TX_GAS],
+      functionName: 'getMaxTxGasLimit',
+      args: [],
+    })) as bigint;
+    maxTxCache.set(id, v);
+    return v;
+  } catch {
+    return null;
+  }
+}
+
 /** Step gas for one tx. Fixed chains send the deterministic budget; chains
  *  that charge gas_limit x price (Monad) estimate + 25% buffer instead, so
- *  idle-heavy steps don't pay for unused headroom. Falls back to fixed. */
+ *  idle-heavy steps don't pay for unused headroom. On Arbitrum Orbit chains
+ *  the buffer is capped against the on-chain max tx gas limit (ArbGasInfo).
+ *  Falls back to fixed. */
 export async function resolveStepGas(
   signer: Signer,
   game: `0x${string}`,
   budget: number,
   buttons: number,
 ): Promise<bigint> {
-  if (ACTIVE.gasStrategy !== 'estimate') return GAS_STEP;
+  if (activePreset().gasStrategy !== 'estimate') return GAS_STEP;
   try {
     const est = await publicClient.estimateGas({
       account: signer.account,
@@ -123,6 +186,14 @@ export async function resolveStepGas(
       data: encodeFunctionData({ abi: GameBoyAbi, functionName: 'step', args: [budget, buttons] }),
     });
     const bumped = (est * 5n) / 4n;
+    if (activePreset().arbOrbit) {
+      const maxTx = await maxTxGasLimit();
+      if (maxTx !== null) {
+        // leave 1M headroom under the protocol cap
+        const cap = maxTx > 1000000n ? maxTx - 1000000n : maxTx;
+        return bumped > cap ? cap : bumped;
+      }
+    }
     return bumped > GAS_CAP ? GAS_CAP : bumped;
   } catch {
     return GAS_STEP;
@@ -131,7 +202,7 @@ export async function resolveStepGas(
 
 export async function createGame(signer: Signer): Promise<{ game: `0x${string}`; hash: `0x${string}` }> {
   const hash = await signer.wallet.writeContract({
-    address: FACTORY_ADDRESS,
+    address: factoryAddress(),
     abi: FactoryAbi,
     functionName: 'create',
     args: [],
@@ -194,7 +265,7 @@ export async function stepOnce(
   game: `0x${string}`,
   buttons: number,
   asm: FrameAssembler,
-  budget = STEP_BUDGET,
+  budget = stepBudget(),
   onSerial?: (bytes: number[]) => void,
 ): Promise<StepOnceResult> {
   const hash = await signer.wallet.writeContract({
@@ -223,7 +294,7 @@ export async function advanceFrame(
   game: `0x${string}`,
   buttons: number,
   asm: FrameAssembler,
-  budget = STEP_BUDGET,
+  budget = stepBudget(),
   onSerial?: (bytes: number[]) => void,
   onStep?: (n: number) => void,
 ): Promise<AdvanceResult> {
@@ -338,18 +409,18 @@ export async function renounce(signer: Signer, game: `0x${string}`): Promise<`0x
 }
 
 const HINTS: Record<string, string> = {
-  NotOwner: 'this account is not the game owner (renounced games are open to all)',
-  Locked: 'game already booted or upload in progress — init/claims locked',
-  BadChunk: 'chunk must be 1..16384 bytes',
-  BadStore: 'non-final chunks must be full 16KB banks (bank alignment)',
-  NoRom: 'game not booted yet — upload + finalize first',
-  BadBudget: 'step budget max is 20000 cycles',
-  TooLong: 'read too long',
-  RomTooSmall: 'ROM smaller than the 0x148-byte header (or nothing uploaded)',
-  NoStores: 'no ROM stores uploaded',
-  BadMbc: 'unsupported cartridge mapper (only MBC1/MBC3/MBC5 + ROM-only)',
-  BadBlob: 'SSTORE2 blob empty or >16KB',
-  DeployFailed: 'SSTORE2 store deploy failed',
+  NotOwner: 'not the game owner. Renounced games are open to all.',
+  Locked: 'already booted or uploading. Init is locked.',
+  BadChunk: 'chunks must be 1 to 16384 bytes.',
+  BadStore: 'every chunk but the last must be a full 16KB bank.',
+  NoRom: 'not booted yet. Upload and finalize first.',
+  BadBudget: 'step budget tops out at 20000 cycles.',
+  TooLong: 'read too long.',
+  RomTooSmall: 'ROM is smaller than its header, or nothing was uploaded.',
+  NoStores: 'no ROM stores uploaded.',
+  BadMbc: 'mapper not supported. MBC1, MBC3, MBC5 and plain ROM only.',
+  BadBlob: 'SSTORE2 blob empty or over 16KB.',
+  DeployFailed: 'SSTORE2 store deploy failed.',
 };
 
 export function explainError(e: unknown): string {

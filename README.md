@@ -53,22 +53,28 @@ interrupts/serial/stepping/gas-cap/input units, chunked-upload + factory
 curator flows, all 20 PPU goldens (identical pixels to the full
 build), Blargg `01-special` + `02-interrupts` passing.
 
-## Monad build (`monad/`, 128KB code limit)
+## Large build (`large/`, big-limit chains)
 
-`monad/` is the full emulator (storage + SSTORE2 ROM, `getState`, helper)
+`large/` is the full emulator (storage + SSTORE2 ROM, `getState`, helper)
 with the factory init flow ported: bricked constructor, owner-claim
 `initialize()`, `regs()`/`ppuRegs()`/`readMem()`/`romStore()`/`romSize()`
 views — a strict superset of the slim API, so the frontend speaks it
-unchanged. Build/test with `FOUNDRY_PROFILE=monad forge build|test`.
+unchanged. Build/test with `FOUNDRY_PROFILE=large forge build|test`
+(select the network per command, e.g. `--network monad`, or test against
+a fork; the profile itself stays neutral).
 
-- **30,718 bytes** runtime (~100KB under Monad's 131,072 limit).
-- Requires nightly Foundry with Monad support: `[profile.monad]` sets
-  `network = "monad"`; run local chains as `anvil --network monad`.
+- **31,085 bytes** runtime (~100KB under Monad's 131,072 limit).
+- Optimized for gas with the headroom: interrupt-service gate, timer +
+  boundary fusion into the frame loops, flattened PPU pixel loop
+  (~7% off per-frame gas vs the unoptimized port; validated by the
+  golden + Blargg suites below).
+- Requires nightly Foundry with Monad support for Monad-rule testing
+  (`--network monad`, or run local chains as `anvil --network monad`).
   (Stable 1.7.x rejects the 30KB deploy with the 24KB size error.)
 - stepping stays mandatory (`runFrame` ~41M > 30M/tx); budget rises to
   `step(20000)`. Validation: 13 tests (factory/init/bricked-impl guards,
   both upload paths, stepping, serial, views, helper snapshot, real ROM).
-- Deploy: `script/DeployMonad.s.sol` (writes `frontend/.env`).
+- Deploy: `script/DeployLarge.s.sol` (writes `frontend/.env`).
 
 ## Execution under EIP-7825 (16,777,216 gas/tx)
 

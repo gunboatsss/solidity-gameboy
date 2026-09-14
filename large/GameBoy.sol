@@ -6,7 +6,7 @@ import "./GbCpu.sol";
 error NotOwner();
 error Locked();
 
-/// @title GameBoy — a Nintendo DMG emulator that runs on the EVM (Monad build)
+/// @title GameBoy — a Nintendo DMG emulator that runs on the EVM (large build)
 /// @notice Full features (storage + SSTORE2 ROM, getState, helper views)
 ///         with the factory init flow: direct deploys are born bricked
 ///         (implementation-only); ALL games are EIP-1167 clones claimed via
@@ -183,15 +183,49 @@ contract GameBoy is GbCpu {
         bool done = false;
         uint32 exec;
         while (!done) {
-            uint32 c = _serviceInterrupts(fr);
+            // OPT: skip interrupt servicing unless something is pending
+            // (covers EI delay, HALT wakeup, and IRQ service exactly)
+            uint32 c = 0;
+            if (fr.halted || fr.ime || fr.eiPending) c = _serviceInterrupts(fr);
             if (c == 0) c = _step(fr); // _step waits 4 cycles while halted
-            _tickTimer(fr, c);
+            // OPT: timer + frame-boundary checks inlined (hottest loop)
+            if (c != 0) {
+                unchecked {
+                    uint16 prev = fr.divc;
+                    uint16 now_ = prev + uint16(c);
+                    fr.divc = now_;
+                    if ((fr.tac & 0x04) != 0) {
+                        uint8 sel = fr.tac & 0x03;
+                        uint8 bitPos = sel == 0 ? 9 : sel == 1 ? 3 : sel == 2 ? 5 : 7;
+                        uint32 m = uint32(1) << (bitPos + 1);
+                        uint32 ticks = ((uint32(prev & uint16(m - 1))) + c) / m;
+                        if (ticks != 0) {
+                            uint32 t = uint32(fr.tima) + ticks;
+                            if (t > 0xFF) {
+                                fr.iff |= 0x04;
+                                uint32 over = t - 0x100;
+                                fr.tima = uint8((uint32(fr.tma) + over) & 0xFF);
+                            } else {
+                                fr.tima = uint8(t);
+                            }
+                        }
+                    }
+                }
+            }
             _tickPpu(fr, c, fb, false);
             unchecked {
                 fr.frameCycles += c;
                 exec += c;
             }
-            done = _crossed(fr);
+            // OPT: boundary check inlined
+            unchecked {
+                while (fr.frameCycles >= CYCLES_PER_FRAME) {
+                    fr.frameCycles -= uint32(CYCLES_PER_FRAME);
+                    emit FrameDone(fr.frameNo);
+                    fr.frameNo += 1;
+                    done = true;
+                }
+            }
         }
         _flushFrame(fr, exec);
     }
@@ -221,13 +255,44 @@ contract GameBoy is GbCpu {
         bytes memory noFb = new bytes(0);
         unchecked {
             while (done < maxCycles) {
-                uint32 c = _serviceInterrupts(fr);
+                // OPT: skip interrupt servicing unless something is pending
+                // (covers EI delay, HALT wakeup, and IRQ service exactly)
+                uint32 c = 0;
+                if (fr.halted || fr.ime || fr.eiPending) c = _serviceInterrupts(fr);
                 if (c == 0) c = _step(fr);
-                _tickTimer(fr, c);
+                // OPT: timer + frame-boundary checks inlined (hottest loop)
+                // (outer unchecked block applies)
+                if (c != 0) {
+                    uint16 prev = fr.divc;
+                    uint16 now_ = prev + uint16(c);
+                    fr.divc = now_;
+                    if ((fr.tac & 0x04) != 0) {
+                        uint8 sel = fr.tac & 0x03;
+                        uint8 bitPos = sel == 0 ? 9 : sel == 1 ? 3 : sel == 2 ? 5 : 7;
+                        uint32 m = uint32(1) << (bitPos + 1);
+                        uint32 ticks = ((uint32(prev & uint16(m - 1))) + c) / m;
+                        if (ticks != 0) {
+                            uint32 t = uint32(fr.tima) + ticks;
+                            if (t > 0xFF) {
+                                fr.iff |= 0x04;
+                                uint32 over = t - 0x100;
+                                fr.tima = uint8((uint32(fr.tma) + over) & 0xFF);
+                            } else {
+                                fr.tima = uint8(t);
+                            }
+                        }
+                    }
+                }
                 _tickPpu(fr, c, noFb, true);
                 done += c;
                 fr.frameCycles += c;
-                if (_crossed(fr)) frameDone = true;
+                // OPT: boundary check inlined
+                while (fr.frameCycles >= CYCLES_PER_FRAME) {
+                    fr.frameCycles -= uint32(CYCLES_PER_FRAME);
+                    emit FrameDone(fr.frameNo);
+                    fr.frameNo += 1;
+                    frameDone = true;
+                }
             }
         }
         ly = fr.ly;

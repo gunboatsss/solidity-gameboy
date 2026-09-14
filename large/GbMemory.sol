@@ -227,24 +227,13 @@ abstract contract GbMemory is GbStorage {
         unchecked {
             totalCycles += executed;
         }
-        // frameClock/frameCount track sub-frame progress across step() calls;
-        // _crossed() bumps frameNo + carries the remainder at each boundary.
-        frameClock = fr.frameCycles;
-        frameCount = fr.frameNo;
-    }
+    // frameClock/frameCount track sub-frame progress across step() calls;
+    // (boundary crossing itself is inlined into the runFrame/step loops;
+    // see GameBoy.sol OPT comments).
+    frameClock = fr.frameCycles;
+    frameCount = fr.frameNo;
+}
 
-    /// @dev Detect 70224-cycle frame boundary crossings: emit FrameDone,
-    ///      bump the frame number, carry the remainder. Returns crossing(s).
-    function _crossed(Frame memory fr) internal returns (bool crossed) {
-        unchecked {
-            while (fr.frameCycles >= CYCLES_PER_FRAME) {
-                fr.frameCycles -= uint32(CYCLES_PER_FRAME);
-                emit FrameDone(fr.frameNo);
-                fr.frameNo += 1;
-                crossed = true;
-            }
-        }
-    }
 
     // ---------- mapped ROM byte (buffer when SSTORE2 path active) ----------
 

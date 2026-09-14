@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { Signer } from '../eth';
-import { FACTORY_ADDRESS, IMPL_ADDRESS, isConfigured } from '../config';
-import { createGame, cacheGame, explainError, listGames, uploadRom } from '../gb';
+import { factoryAddress, implAddress, isConfigured } from '../config';
+import { createGame, cacheGame, explainError, fetchRomTitle, listGames, uploadRom } from '../gb';
 import type { GameInfo } from '../gb';
+import { parseRomMeta } from '../rom';
+import type { RomMeta } from '../rom';
 
 export default function CreateGame({
   signer,
@@ -17,6 +19,7 @@ export default function CreateGame({
 }) {
   const [games, setGames] = useState<GameInfo[]>([]);
   const [file, setFile] = useState<File | null>(null);
+  const [meta, setMeta] = useState<RomMeta | null>(null);
   const [phase, setPhase] = useState<string>('');
   const [progress, setProgress] = useState<[number, number]>([0, 0]);
   const [busy, setBusy] = useState<boolean>(false);
@@ -25,7 +28,19 @@ export default function CreateGame({
   const refresh = useCallback(() => {
     if (!isConfigured) return;
     listGames()
-      .then(setGames)
+      .then((list) => {
+        setGames(list);
+        for (const g of list) {
+          if (g.title) continue;
+          fetchRomTitle(g.game)
+            .then((t) => {
+              if (!t) return;
+              cacheGame(g.game, g.creator, t);
+              setGames((cur) => cur.map((c) => (c.game === g.game ? { ...c, title: t } : c)));
+            })
+            .catch(() => {});
+        }
+      })
       .catch((e) => setErr(explainError(e)));
   }, []);
 
@@ -34,26 +49,26 @@ export default function CreateGame({
   async function deploy(): Promise<void> {
     setErr('');
     if (!signer) {
-      setErr('connect a signer first');
+      setErr('Connect first.');
       return;
     }
     if (!file) {
-      setErr('pick a .gb ROM file first');
+      setErr('Pick a ROM file first.');
       return;
     }
     const buf = new Uint8Array(await file.arrayBuffer());
     if (buf.length <= 0x147) {
-      setErr(`ROM too small (${buf.length} bytes, need > 0x147)`);
+      setErr(`ROM too small. Got ${buf.length} bytes, need more than 0x147.`);
       return;
     }
     setBusy(true);
     try {
-      setPhase('factory.create()…');
+      setPhase('Creating game…');
       const { game } = await createGame(signer);
-      cacheGame(game, signer.address);
-      setPhase(`uploading ${buf.length} bytes in 16KB chunks…`);
+      cacheGame(game, signer.address, meta?.title ?? '');
+      setPhase(`Uploading ${buf.length} bytes in 16KB chunks…`);
       await uploadRom(signer, game, buf, (d, t) => setProgress([d, t]));
-      setPhase('finalizing… done');
+      setPhase('Finalizing. Done.');
       onSelect(game);
       onCreated();
     } catch (e) {
@@ -69,10 +84,12 @@ export default function CreateGame({
     return (
       <section className="card">
         <h2>games</h2>
-        <p className="muted">
-          no factory configured — run <code className="mono">script/Deploy.s.sol</code> to write{' '}
-          <code className="mono">frontend/.env</code>, then restart vite.
+        <p className="muted small">
+          factory <code className="mono">0x0000000000000000000000000000000000000000</code>
+          <br />
+          impl <code className="mono">0x0000000000000000000000000000000000000000</code>
         </p>
+        <p className="muted">Nothing deployed on this chain yet. Deploy first, then come back.</p>
       </section>
     );
   }
@@ -81,29 +98,44 @@ export default function CreateGame({
     <section className="card">
       <h2>games</h2>
       <p className="muted small">
-        factory <code className="mono">{FACTORY_ADDRESS}</code>
+        factory <code className="mono">{factoryAddress()}</code>
         <br />
-        impl <code className="mono">{IMPL_ADDRESS}</code>
+        impl <code className="mono">{implAddress()}</code>
       </p>
       <div className="row">
         <input
           type="file"
           accept=".gb,.bin,application/octet-stream"
           disabled={busy}
-          onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+          onChange={(e) => {
+            const f = e.target.files?.[0] ?? null;
+            setFile(f);
+            setMeta(null);
+            if (f) {
+              f.arrayBuffer()
+                .then((b) => setMeta(parseRomMeta(new Uint8Array(b))))
+                .catch(() => setMeta(null));
+            }
+          }}
         />
         <button disabled={busy || !signer} onClick={() => void deploy()}>
-          {busy ? 'working…' : 'create + upload'}
+          {busy ? 'Working…' : 'Create game'}
         </button>
         <button disabled={busy} onClick={refresh}>
-          refresh list
+          refresh
         </button>
       </div>
-      {file && (
-        <p className="muted small">
-          {file.name} · {file.size} bytes · {Math.ceil(file.size / 16384)} chunk(s)
-        </p>
-      )}
+      {file &&
+        (meta ? (
+          <p className="muted small">
+            {meta.title || file.name}, {meta.mapper}, {meta.romSize} ROM, {meta.ramSize} RAM (
+            {Math.ceil(file.size / 16384)} chunks)
+          </p>
+        ) : (
+          <p className="muted small">
+            {file.name}, {file.size} bytes, {Math.ceil(file.size / 16384)} chunks
+          </p>
+        ))}
       {phase !== '' && <p className="muted">{phase}</p>}
       {progress[1] > 0 && (
         <progress value={progress[0]} max={progress[1]}>
@@ -116,16 +148,17 @@ export default function CreateGame({
           <li key={g.game}>
             <button
               className="linklike mono"
+              title={g.game}
               onClick={() => {
-                cacheGame(g.game, g.creator);
+                cacheGame(g.game, g.creator, g.title ?? '');
                 onSelect(g.game);
               }}
             >
-              {g.game}
+              {g.title || g.game}
             </button>
           </li>
         ))}
-        {games.length === 0 && <li className="muted">no games yet</li>}
+        {games.length === 0 && <li className="muted">Nothing here yet.</li>}
       </ul>
     </section>
   );

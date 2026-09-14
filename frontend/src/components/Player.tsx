@@ -3,25 +3,28 @@ import type { ReactElement } from 'react';
 import type { Log } from 'viem';
 import type { Signer } from '../eth';
 import { publicClient } from '../eth';
+import { activePreset } from '../config';
 import GameBoyAbi from '../abi/GameBoy.json';
 import {
   BTN,
   FB_H,
   FB_W,
   FrameAssembler,
-  STEP_BUDGET,
   advanceFrame,
   decodeGameLogs,
   explainError,
+  fetchRomTitle,
   getOwner,
   getRegs,
   getRomSize,
   previewFrame,
+  removeGameCache,
   renounce,
+  stepBudget,
   stepOnce,
 } from '../gb';
 import type { Regs } from '../gb';
-import { PALETTES, drawFrame, serialToText } from '../palette';
+import { PALETTES, applyPageTheme, drawFrame, serialToText } from '../palette';
 import { readPpuState } from '../render/storage.ts';
 import { renderFrame } from '../render/ppu.ts';
 
@@ -37,7 +40,17 @@ const KEYMAP: Record<string, number> = {
   Enter: BTN.START,
 };
 
-export default function Player({ signer, game }: { signer: Signer | null; game: `0x${string}` | null }) {
+export default function Player({
+  signer,
+  game,
+  chainId,
+  onGameRemoved,
+}: {
+  signer: Signer | null;
+  game: `0x${string}` | null;
+  chainId: number;
+  onGameRemoved: () => void;
+}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const serialBoxRef = useRef<HTMLDivElement>(null);
   const asm = useMemo(() => new FrameAssembler(), [game]);
@@ -50,9 +63,19 @@ export default function Player({ signer, game }: { signer: Signer | null; game: 
   const [held, setHeld] = useState<number>(0);
   const [busy, setBusy] = useState<boolean>(false);
   const [auto, setAuto] = useState<boolean>(false);
-  const [palette, setPalette] = useState<string>('green');
+  const [palette, setPalette] = useState<string>(() => activePreset().theme);
+
+  // pin the theme to the chain; gameboy/gray stay pickable everywhere
+  const themeOptions = [activePreset().theme, 'gameboy', 'gray'].filter(
+    (t, i, a) => a.indexOf(t) === i && PALETTES[t] !== undefined,
+  );
+  useEffect(() => {
+    setPalette(activePreset().theme);
+  }, [chainId]);
   const [steps, setSteps] = useState<number>(0);
   const [txs, setTxs] = useState<`0x${string}`[]>([]);
+  const [deadGame, setDeadGame] = useState<boolean>(false);
+  const [title, setTitle] = useState<string>('');
   const [err, setErr] = useState<string>('');
   const [note, setNote] = useState<string>('');
   const heldRef = useRef<number>(0);
@@ -79,24 +102,58 @@ export default function Player({ signer, game }: { signer: Signer | null; game: 
     setErr('');
     setNote('');
     setTxs([]);
+    setDeadGame(false);
     paintedRef.current = null;
     asm.reset();
     if (!game) return;
-    getOwner(game).then(setOwner).catch(() => setOwner(null));
-    getRomSize(game)
-      .then(setRomSize)
-      .catch(() => setRomSize(null));
-    readPpuState(game)
-      .then((st) => {
-        setFb(renderFrame(st));
-        setNote('computed from on-chain state — listening for new frames');
+    let live = true;
+    // A saved game may point at nothing (chain was reset since). Check code
+    // first so everything downstream doesn't fail one by one on a dead address.
+    publicClient
+      .getCode({ address: game })
+      .then((code) => {
+        if (!live) return;
+        if (!code || code === '0x') {
+          setDeadGame(true);
+          setErr('No contract here. The chain was probably reset since this game was saved.');
+          return;
+        }
+        getOwner(game).then(setOwner).catch(() => setOwner(null));
+        getRomSize(game)
+          .then(setRomSize)
+          .catch(() => setRomSize(null));
+        readPpuState(game)
+          .then((st) => {
+            if (!live) return;
+            setFb(renderFrame(st));
+            setNote('Drawn from chain data. New frames show up as they land.');
+          })
+          .catch(() => {
+            if (live) setNote('Upload a ROM and finalize first.');
+          });
       })
-      .catch(() => setNote('upload + finalize to boot, then frames render here'));
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
   }, [game, asm]);
 
+  // ROM title from the header (file bytes at upload, chain stores after)
+  useEffect(() => {
+    setTitle('');
+    if (!game) return;
+    let live = true;
+    fetchRomTitle(game)
+      .then((t) => {
+        if (live) setTitle(t);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [game]);
+
   // listen to emitted logs: repaint whenever any frame completes on-chain
-  // (own steps or anyone else's in crowdplay). Serial stays owned by the
-  // advance path to avoid double-counting shared receipts.
   useEffect(() => {
     if (!game) return;
     const sub = new FrameAssembler();
@@ -126,8 +183,13 @@ export default function Player({ signer, game }: { signer: Signer | null; game: 
     if (!cv || !fb) return;
     const ctx = cv.getContext('2d');
     if (!ctx) return;
-    drawFrame(ctx, fb, FB_W, FB_H, PALETTES[palette] ?? PALETTES.green);
+    drawFrame(ctx, fb, FB_W, FB_H, PALETTES[palette] ?? PALETTES.gameboy);
   }, [fb, palette]);
+
+  // theme the whole page from the palette
+  useEffect(() => {
+    applyPageTheme(palette);
+  }, [palette]);
 
   // serial autoscroll
   useEffect(() => {
@@ -194,7 +256,7 @@ export default function Player({ signer, game }: { signer: Signer | null; game: 
         game,
         takeMask(),
         asm,
-        STEP_BUDGET,
+        stepBudget(),
         (bytes) => setSerial((s) => [...s, ...bytes]),
         setSteps,
       );
@@ -226,7 +288,7 @@ export default function Player({ signer, game }: { signer: Signer | null; game: 
     setBusy(true);
     setErr('');
     try {
-      const r = await stepOnce(signer, game, takeMask(), asm, STEP_BUDGET, (bytes) =>
+      const r = await stepOnce(signer, game, takeMask(), asm, stepBudget(), (bytes) =>
         setSerial((s) => [...s, ...bytes]),
       );
       setTxs((t) => [...t.slice(-7), r.hash]);
@@ -236,7 +298,7 @@ export default function Player({ signer, game }: { signer: Signer | null; game: 
         paintedRef.current = r.completed.frame;
         await refreshRegs(game);
       } else {
-        setNote(`step sent — frame still assembling (${r.hash.slice(0, 10)}…)`);
+        setNote('Step sent. Waiting on the rest of the frame.');
       }
     } catch (e) {
       setErr(explainError(e));
@@ -251,7 +313,7 @@ export default function Player({ signer, game }: { signer: Signer | null; game: 
     setErr('');
     try {
       setFb(await previewFrame(signer, game, takeMask()));
-      setNote('preview via eth_call — on-chain state unchanged');
+      setNote('Preview only. Nothing was sent.');
     } catch (e) {
       setErr(explainError(e));
     }
@@ -262,7 +324,7 @@ export default function Player({ signer, game }: { signer: Signer | null; game: 
     setErr('');
     try {
       setFb(renderFrame(await readPpuState(game)));
-      setNote('rendered locally from on-chain state (runFrame-equivalent still; exact for fresh/post-frame games)');
+      setNote('Redrawn from chain data.');
     } catch (e) {
       setErr(explainError(e));
     }
@@ -274,7 +336,7 @@ export default function Player({ signer, game }: { signer: Signer | null; game: 
     try {
       await renounce(signer, game);
       setOwner(await getOwner(game));
-      setNote('ownership renounced — play is open to everyone now');
+      setNote('Done. Anyone can play now.');
     } catch (e) {
       setErr(explainError(e));
     }
@@ -303,7 +365,7 @@ export default function Player({ signer, game }: { signer: Signer | null; game: 
     return (
       <section className="card">
         <h2>player</h2>
-        <p className="muted">create or pick a game first</p>
+        <p className="muted">No game selected. Create one first.</p>
       </section>
     );
   }
@@ -314,49 +376,73 @@ export default function Player({ signer, game }: { signer: Signer | null; game: 
   return (
     <section className="card">
       <h2>player</h2>
+      {title !== '' && <p>{title}</p>}
       <code className="mono small">{game}</code>
+      {deadGame && game && (
+        <div className="row">
+          <button
+            onClick={() => {
+              removeGameCache(game);
+              onGameRemoved();
+            }}
+          >
+            forget this game
+          </button>
+        </div>
+      )}
       <p className="muted small">
-        owner <code className="mono">{owner ?? '…'}</code>
-        {openPlay ? ' (open play)' : isOwner ? ' (you)' : ''} · rom{' '}
-        {romSize === null ? '…' : `${romSize.toString()} bytes`}
-        {frameNo !== null ? ` · frame ${frameNo.toString()}` : ''}
+        Owner <code className="mono">{owner ?? '…'}</code>
+        {openPlay ? ' (open)' : isOwner ? ' (you)' : ''}. Rom{' '}
+        {romSize === null ? '…' : `${romSize.toString()} bytes`}.
+        {frameNo !== null ? ` Frame ${frameNo.toString()}.` : ''}
       </p>
-      <canvas ref={canvasRef} width={FB_W} height={FB_H} className="screen" />
+      <div className="stagerow">
+        <canvas ref={canvasRef} width={FB_W} height={FB_H} className="screen" />
+        <div className="sidecontrols">
+          <div className="dpad">
+            <div />
+            {padButton('▲', BTN.UP)}
+            <div />
+            {padButton('B', BTN.B)}
+            {padButton('A', BTN.A)}
+            {padButton('◀', BTN.LEFT)}
+            {padButton('▼', BTN.DOWN)}
+            {padButton('▶', BTN.RIGHT)}
+            {padButton('sel', BTN.SELECT)}
+            {padButton('start', BTN.START)}
+          </div>
+          <p className="muted small">
+            Arrows move. X is A and Z is B. Shift selects. Enter starts. Held 0x
+            {held.toString(16)}
+          </p>
+        </div>
+      </div>
       <div className="row">
         <button disabled={!signer || busy} onClick={() => void doAdvance()}>
-          {busy ? `firing step txs… (${steps})` : 'advance 1 frame (~5 txs)'}
+          {busy ? `Sending… (${steps})` : 'next frame'}
         </button>
         <button disabled={!signer || busy} onClick={() => void doStepOnce()}>
-          step 1 tx
+          step once
         </button>
         <button disabled={busy || !signer} onClick={() => void doPreview()}>
-          preview (call)
+          preview
         </button>
         <button disabled={busy} onClick={() => void doRenderState()}>
-          render state (local)
+          redraw from chain
         </button>
         <button disabled={!signer} onClick={() => setAuto((a) => !a)}>
-          {auto ? 'stop' : 'auto-play'}
+          {auto ? 'stop' : 'auto'}
         </button>
         <select value={palette} onChange={(e) => setPalette(e.target.value)} disabled={busy}>
-          <option value="green">green</option>
-          <option value="gray">gray</option>
+          {themeOptions.map((name) => (
+            <option key={name} value={name}>
+              {name}
+            </option>
+          ))}
         </select>
       </div>
-      <div className="dpad">
-        <div />
-        {padButton('▲', BTN.UP)}
-        <div />
-        {padButton('B', BTN.B)}
-        {padButton('A', BTN.A)}
-        {padButton('◀', BTN.LEFT)}
-        {padButton('▼', BTN.DOWN)}
-        {padButton('▶', BTN.RIGHT)}
-        {padButton('sel', BTN.SELECT)}
-        {padButton('start', BTN.START)}
-      </div>
       <div className="small">
-        <span className="muted">frame txs ({txs.length}):</span>
+        <span className="muted">transactions ({txs.length}):</span>
         <ul className="mono txbox">
           {txs.slice(-8).map((h) => (
             <li key={h} title={h}>
@@ -365,20 +451,16 @@ export default function Player({ signer, game }: { signer: Signer | null; game: 
           ))}
         </ul>
       </div>
-      <p className="muted small">
-        keys: arrows = d-pad · X = A · Z = B · shift = select · enter = start · held mask 0x
-        {held.toString(16)}
-      </p>
       {note !== '' && <p className="muted">{note}</p>}
       {err !== '' && <div className="error">{err}</div>}
       <div className="row">
-        <button disabled={!signer || !isOwner} onClick={() => void doRenounce()} title="open play to everyone">
-          renounce (crowdplay)
+        <button disabled={!signer || !isOwner} onClick={() => void doRenounce()} title="Let anyone play">
+          open to everyone
         </button>
       </div>
       <h3>serial</h3>
       <div ref={serialBoxRef} className="serial">
-        {serialToText(serial) || <span className="muted">no serial output yet</span>}
+        {serialToText(serial) || <span className="muted">Nothing printed yet.</span>}
       </div>
       <h3>regs</h3>
       <div className="row">
@@ -408,7 +490,7 @@ export default function Player({ signer, game }: { signer: Signer | null; game: 
           </tbody>
         </table>
       ) : (
-        <p className="muted small">no regs yet — advance a frame</p>
+        <p className="muted small">Advance a frame to see registers.</p>
       )}
     </section>
   );

@@ -5,7 +5,7 @@ import "forge-std/Test.sol";
 import "../GameBoy.sol";
 import "../GameBoyFactory.sol";
 
-/// @notice Monad-build play tests: frames, stepping, serial — all games are
+/// @notice Large-build play tests: frames, stepping, serial — all games are
 ///         factory clones booted via chunked SSTORE2 upload.
 contract PlayTest is Test {
     GameBoyFactory factory;

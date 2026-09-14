@@ -24,17 +24,16 @@ via_ir = true
 fs_permissions = [{ access = "read", path = "./test/roms/" }, { access = "read-write", path = "./frontend/" }]
 gas_limit = 274877906944
 
-# Full-featured variant for Monad (128KB code limit: no slimming needed).
-# Same GameBoy + factory init flow as slim, all upload paths retained.
-# Requires nightly Foundry with Monad support; `network = "monad"` makes
-# local builds/tests/scripts follow Monad execution rules (code size,
-# storage pages, linear memory). Run with:
-# FOUNDRY_PROFILE=monad forge build|test
-[profile.monad]
-network = "monad"
-src = "monad"
-test = "monad/test"
-out = "out-monad"
+# Full-featured variant for big-limit chains (Monad 128KB, Robinhood 96KB):
+# no slimming needed. Same GameBoy + factory init flow as slim, all upload
+# paths retained. Requires nightly Foundry with Monad support; `network`
+# follows the target chain (use --network monad or a monad fork for Monad
+# execution rules: code size, storage pages, linear memory). Run with:
+# FOUNDRY_PROFILE=large forge build|test
+[profile.large]
+src = "large"
+test = "large/test"
+out = "out-large"
 libs = ["lib"]
 optimizer = true
 optimizer_runs = 200

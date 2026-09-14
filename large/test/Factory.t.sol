@@ -6,7 +6,7 @@ import "../GameBoy.sol";
 import "../GameBoyFactory.sol";
 import "../GameBoyHelper.sol";
 
-/// @notice Monad-build factory flows: chunked-only clone games (SSTORE2 and
+/// @notice Large-build factory flows: chunked-only clone games (SSTORE2 and
 ///         storage upload paths), init guards, views, real ROM E2E.
 ///         Direct deploys are born bricked (owner = DEAD sink).
 contract FactoryTest is Test {
@@ -121,8 +121,8 @@ contract FactoryTest is Test {
         assertGt(ex, 0);
     }
 
-    /// @dev Storage upload path also works on clones (Monad has no reason to
-    ///      restrict ingress to SSTORE2).
+    /// @dev Storage upload path also works on clones (big-limit chains have
+    ///      no reason to restrict ingress to SSTORE2).
     function test_StorageUploadPath() public {
         GameBoy game = factory.create();
         bytes memory rom = _smallRom();

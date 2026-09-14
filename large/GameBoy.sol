@@ -94,29 +94,30 @@ contract GameBoy is GbCpu {
         // NOTE: no Solidity-level array access may follow the raw length
         // sstore in this function (via-IR bounds-check reasoning) — the
         // word blast and tail merge below are pure assembly.
-        bytes memory m = chunk; // calldata -> memory (cheap bulk copy)
+        // OPT: read straight from calldata (no memory copy of the chunk);
+        // tail is word-aligned and < 32B, so it fits in one slot and
+        // merges with a single masked SLOAD/SSTORE (no per-byte loop).
         uint256 words = n / 32;
         assembly {
             mstore(0, rom.slot)
             sstore(rom.slot, add(mul(newLen, 2), 1))
             let base := keccak256(0, 0x20)
-            let src := add(m, 32)
+            let src := chunk.offset
             let first := div(offset, 32)
             for { let w := 0 } lt(w, words) { w := add(w, 1) } {
-                sstore(add(base, add(first, w)), mload(add(src, mul(w, 32))))
+                sstore(add(base, add(first, w)), calldataload(add(src, mul(w, 32))))
             }
-            // tail bytes (file is big-endian within each word)
+            // tail bytes (file is big-endian within each word, same layout
+            // as calldataload: first byte at the top, so the words align)
             let tailStart := add(offset, mul(words, 32))
             let tailLen := sub(add(offset, n), tailStart)
             if gt(tailLen, 0) {
                 let slot := add(base, div(tailStart, 32))
                 let val := sload(slot)
-                for { let i := 0 } lt(i, tailLen) { i := add(i, 1) } {
-                    let f := add(tailStart, i)
-                    let sh := mul(sub(31, mod(f, 32)), 8)
-                    let b := byte(0, mload(add(add(src, mul(words, 32)), i)))
-                    val := or(and(val, not(shl(sh, 0xFF))), shl(sh, b))
-                }
+                let dataWord := calldataload(add(src, mul(words, 32)))
+                let shBits := mul(sub(32, tailLen), 8)
+                let lowMask := sub(shl(shBits, 1), 1)
+                val := or(and(val, lowMask), and(dataWord, not(lowMask)))
                 sstore(slot, val)
             }
         }
@@ -180,50 +181,46 @@ contract GameBoy is GbCpu {
         // prev is active-low (1=was released), pressed is active-high
         if ((pressed & prev) != 0) fr.iff |= 0x10;
         fb = new bytes(23040);
-        bool done = false;
         uint32 exec;
-        while (!done) {
-            // OPT: skip interrupt servicing unless something is pending
-            // (covers EI delay, HALT wakeup, and IRQ service exactly)
-            uint32 c = 0;
-            if (fr.halted || fr.ime || fr.eiPending) c = _serviceInterrupts(fr);
-            if (c == 0) c = _step(fr); // _step waits 4 cycles while halted
-            // OPT: timer + frame-boundary checks inlined (hottest loop)
-            if (c != 0) {
-                unchecked {
-                    uint16 prev = fr.divc;
-                    uint16 now_ = prev + uint16(c);
-                    fr.divc = now_;
-                    if ((fr.tac & 0x04) != 0) {
-                        uint8 sel = fr.tac & 0x03;
-                        uint8 bitPos = sel == 0 ? 9 : sel == 1 ? 3 : sel == 2 ? 5 : 7;
-                        uint32 m = uint32(1) << (bitPos + 1);
-                        uint32 ticks = ((uint32(prev & uint16(m - 1))) + c) / m;
-                        if (ticks != 0) {
-                            uint32 t = uint32(fr.tima) + ticks;
-                            if (t > 0xFF) {
-                                fr.iff |= 0x04;
-                                uint32 over = t - 0x100;
-                                fr.tima = uint8((uint32(fr.tma) + over) & 0xFF);
-                            } else {
-                                fr.tima = uint8(t);
-                            }
+        unchecked {
+            while (true) {
+                // OPT: skip interrupt servicing unless something is pending
+                // (covers EI delay, HALT wakeup, and IRQ service exactly)
+                uint32 c = 0;
+                if (fr.halted || fr.ime || fr.eiPending) c = _serviceInterrupts(fr);
+                if (c == 0) c = _step(fr); // _step waits 4 cycles while halted
+                // OPT: timer + frame-boundary checks inlined (hottest loop).
+                // _step/_serviceInterrupts never return 0, so no c != 0 guard.
+                uint16 pd = fr.divc;
+                uint16 now_ = pd + uint16(c);
+                fr.divc = now_;
+                if ((fr.tac & 0x04) != 0) {
+                    uint8 sel = fr.tac & 0x03;
+                    // OPT: shift instead of DIV (m is a power of two:
+                    // sel 0..3 -> m 1024/16/64/256 -> shift 10/4/6/8).
+                    uint32 shift = sel == 0 ? 10 : sel == 1 ? 4 : sel == 2 ? 6 : 8;
+                    uint32 ticks = ((uint32(pd) & ((uint32(1) << shift) - 1)) + c) >> shift;
+                    if (ticks != 0) {
+                        uint32 t = uint32(fr.tima) + ticks;
+                        if (t > 0xFF) {
+                            fr.iff |= 0x04;
+                            uint32 over = t - 0x100;
+                            fr.tima = uint8((uint32(fr.tma) + over) & 0xFF);
+                        } else {
+                            fr.tima = uint8(t);
                         }
                     }
                 }
-            }
-            _tickPpu(fr, c, fb, false);
-            unchecked {
+                _tickPpu(fr, c, fb, false);
                 fr.frameCycles += c;
                 exec += c;
-            }
-            // OPT: boundary check inlined
-            unchecked {
-                while (fr.frameCycles >= CYCLES_PER_FRAME) {
+                // OPT: single-shot boundary check (c <= 24 << 70224, so at
+                // most one crossing per instruction; no loop needed).
+                if (fr.frameCycles >= CYCLES_PER_FRAME) {
                     fr.frameCycles -= uint32(CYCLES_PER_FRAME);
                     emit FrameDone(fr.frameNo);
                     fr.frameNo += 1;
-                    done = true;
+                    break;
                 }
             }
         }
@@ -260,34 +257,35 @@ contract GameBoy is GbCpu {
                 uint32 c = 0;
                 if (fr.halted || fr.ime || fr.eiPending) c = _serviceInterrupts(fr);
                 if (c == 0) c = _step(fr);
-                // OPT: timer + frame-boundary checks inlined (hottest loop)
+                // OPT: timer + frame-boundary checks inlined (hottest loop).
+                // _step/_serviceInterrupts never return 0, so no c != 0 guard.
                 // (outer unchecked block applies)
-                if (c != 0) {
-                    uint16 prev = fr.divc;
-                    uint16 now_ = prev + uint16(c);
-                    fr.divc = now_;
-                    if ((fr.tac & 0x04) != 0) {
-                        uint8 sel = fr.tac & 0x03;
-                        uint8 bitPos = sel == 0 ? 9 : sel == 1 ? 3 : sel == 2 ? 5 : 7;
-                        uint32 m = uint32(1) << (bitPos + 1);
-                        uint32 ticks = ((uint32(prev & uint16(m - 1))) + c) / m;
-                        if (ticks != 0) {
-                            uint32 t = uint32(fr.tima) + ticks;
-                            if (t > 0xFF) {
-                                fr.iff |= 0x04;
-                                uint32 over = t - 0x100;
-                                fr.tima = uint8((uint32(fr.tma) + over) & 0xFF);
-                            } else {
-                                fr.tima = uint8(t);
-                            }
+                uint16 pd = fr.divc;
+                uint16 now_ = pd + uint16(c);
+                fr.divc = now_;
+                if ((fr.tac & 0x04) != 0) {
+                    uint8 sel = fr.tac & 0x03;
+                    // OPT: shift instead of DIV (m is a power of two:
+                    // sel 0..3 -> m 1024/16/64/256 -> shift 10/4/6/8).
+                    uint32 shift = sel == 0 ? 10 : sel == 1 ? 4 : sel == 2 ? 6 : 8;
+                    uint32 ticks = ((uint32(pd) & ((uint32(1) << shift) - 1)) + c) >> shift;
+                    if (ticks != 0) {
+                        uint32 t = uint32(fr.tima) + ticks;
+                        if (t > 0xFF) {
+                            fr.iff |= 0x04;
+                            uint32 over = t - 0x100;
+                            fr.tima = uint8((uint32(fr.tma) + over) & 0xFF);
+                        } else {
+                            fr.tima = uint8(t);
                         }
                     }
                 }
                 _tickPpu(fr, c, noFb, true);
                 done += c;
                 fr.frameCycles += c;
-                // OPT: boundary check inlined
-                while (fr.frameCycles >= CYCLES_PER_FRAME) {
+                // OPT: single-shot boundary check (c <= 24 << 70224, so at
+                // most one crossing per instruction; no loop needed).
+                if (fr.frameCycles >= CYCLES_PER_FRAME) {
                     fr.frameCycles -= uint32(CYCLES_PER_FRAME);
                     emit FrameDone(fr.frameNo);
                     fr.frameNo += 1;

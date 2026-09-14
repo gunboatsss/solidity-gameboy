@@ -43,7 +43,8 @@ deployability. Build/test it with `FOUNDRY_PROFILE=deploy forge build|test`.
   with `Scanline`/`FrameDone` events (worst measured step ~10M gas, so the
   SAME contract is both deployable and runnable under EIP-7825).
 - No `getState`/helper, serial via `SerialByte` events only.
-- Views: `regs()`, `readMem()` (RAM/IE; ROM via `romStore(i)` + client
+- Views: `regs()`, `ppuRegs()` (LCDC/palettes/scroll/window for off-chain
+  renderers), `readMem()` (RAM/IE; ROM via `romStore(i)` + client
   `extcodecopy`, size via `romSize()`), `SerialByte` logs.
 - Full CPU/PPU/MBC1/timer/interrupts/joypad retained — nothing gameplay-relevant cut.
 
@@ -63,8 +64,8 @@ Use exact-budget stepping instead (~4–5 txs/frame):
 
 - `step` executes whole instructions up to the budget (overshoot < 1 instr),
   with fresh joypad input each call. Measured worst `step(16000)` is ~15M gas
-  (rendering + CPU-heavy phases), and a `gasleft()` hard stop guarantees the
-  tx can never breach the cap regardless of workload density.
+  (rendering + CPU-heavy phases). Execution is atomic: full budget or revert,
+  so size step budgets with headroom under the chain's per-tx cap.
 - Scanlines stream as `Scanline(frame, ly, px)` events (160 bytes each) as
   they render; `FrameDone(frame)` fires at every 70224-cycle boundary with
   the remainder carried, so continued stepping stays phase-locked.
@@ -212,10 +213,9 @@ Vite + React + TS + viem UI, Anvil-first. `script/Deploy.s.sol` deploys impl
 + factory and writes `frontend/.env`; the UI creates games (chunked upload
 with progress), plays them via a `step()` loop that reassembles the
 framebuffer live from `Scanline` events, streams `SerialByte` output, and
-renounces to crowdplay. See `frontend/README.md`. One gotcha baked in:
-`step()` txs carry explicit 16M gas — the contract's 1M early-stop guard
-makes estimators converge to ~91k (a few cycles), so estimation is never
-used for steps.
+renounces to crowdplay. See `frontend/README.md`. `step()` txs carry explicit
+16M gas (worst-measured ~10M with headroom under the 16.7M cap); steps are
+atomic, so no estimation games.
 
 ## Cartridge mappers (MBC)
 

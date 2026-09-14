@@ -83,11 +83,15 @@ export default async function runLive(CASES, hash, expected) {
     }
     await pub.request({ method: 'anvil_setStorageAt', params: [game, toHex(11n, { size: 32 }), toHex(io, { size: 32 })] });
 
-    // verify the reader assumptions: raw slot math + readMem round-trip
+    // verify the reader assumptions: raw slot math + readMem round-trip,
+    // cross-checked against the ppuRegs() view the app actually uses
     const ioBack = BigInt(await pub.getStorageAt({ address: game, slot: '0xb' }) ?? '0x0');
+    const regs = await pub.readContract({ address: game, abi: GameBoyAbi, functionName: 'ppuRegs', args: [] });
+    const viaView = { lcdc: regs[0], scy: regs[1], scx: regs[2], bgp: regs[3], obp0: regs[4], obp1: regs[5], wy: regs[6], wx: regs[7] };
     for (const [k, v] of Object.entries({ lcdc: st.lcdc, scy: st.scy, scx: st.scx, bgp: st.bgp, obp0: st.obp0, obp1: st.obp1, wy: st.wy, wx: st.wx })) {
       const got = Number((ioBack >> BigInt(IO_OFF[k] * 8)) & 0xffn);
-      if (got !== v) throw new Error(`id ${id}: io ${k} read ${got}, want ${v}`);
+      if (got !== v) throw new Error(`id ${id}: io ${k} slot-read ${got}, want ${v}`);
+      if (viaView[k] !== v) throw new Error(`id ${id}: ppuRegs ${k} returned ${viaView[k]}, want ${v}`);
     }
     const vramBack = hexToBytes(await pub.readContract({ address: game, abi: GameBoyAbi, functionName: 'readMem', args: [0x8000, 0x2000] }));
     const oamBack = hexToBytes(await pub.readContract({ address: game, abi: GameBoyAbi, functionName: 'readMem', args: [0xfe00, 0xa0] }));

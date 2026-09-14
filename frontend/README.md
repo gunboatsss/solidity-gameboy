@@ -29,7 +29,13 @@ Open the printed localhost URL, click **use burner (anvil key 0)**, pick a
 - Frames advance via `step(16000, buttons)` txs (~5/frame, each under the
   16.7M EIP-7825 cap). The UI reassembles the 160×144 framebuffer live from
   `Scanline` receipt logs and stops at `FrameDone` — scanlines paint as txs
-  confirm.
+  confirm. Rows missing from a completed frame (the game legitimately emits
+  nothing while LCD is off) hold over from the previous frame, like a real
+  display, instead of flashing blank.
+- Opening a game paints instantly: the framebuffer is computed from on-chain
+  state (`ppuRegs` + `readMem`, see below), no transactions. A log
+  subscription then repaints whenever any frame completes — including frames
+  advanced by other players in crowdplay.
 - `preview (call)` runs `runFrame` as an `eth_call`: shows a frame without
   persisting state (receipts carry no return data, so `runFrame`-as-tx can't
   display).
@@ -43,11 +49,13 @@ enter = start.
 ## Local state rendering (`src/render/` + `npm run check:goldens`)
 
 `render state (local)` reconstructs the framebuffer from on-chain state
-instead of event logs: PPU registers come from storage slot 11
-(`eth_getStorageAt`), VRAM/OAM via `readMem`, rendered by a JS port of the
-Yul scanliner (`render/ppu.ts`). Proven pixel-exact against all 20 PPU
+instead of event logs: VRAM/OAM come from `readMem`, the 8 PPU registers
+from the `ppuRegs()` view (readMem blanks IO, hence the getter), rendered
+by a JS port of the Yul scanliner (`render/ppu.ts`). No storage-slot
+coupling — this survives recompiles. Proven pixel-exact against all 20 PPU
 goldens; `npm run check:goldens:live` replays states on Anvil and compares
-chain output, including the slot-reader assumptions.
+chain output, cross-checking `ppuRegs()` against the raw slot layout
+(slot 11) as a backstop.
 
 Two things this surfaced, worth knowing:
 
@@ -64,14 +72,13 @@ Two things this surfaced, worth knowing:
 
 Slot numbers are compiler-output-specific: re-verify with
 `FOUNDRY_PROFILE=deploy forge inspect GameBoy storage-layout` after any
-contract change (the golden check fails loudly if they drift).
+contract change (the live golden check fails loudly if they drift).
 
 ## Notes
 
-- **Step txs carry explicit gas (16M), never estimation.** `step()` stops at
-  1M gas-left instead of reverting, so estimators converge to ~91k (a few
-  cycles) and the game would advance at ~0.025% speed. The UI always sends
-  `gas: 16_000_000`.
+- **Step txs carry explicit gas (16M).** That covers the worst-measured
+  ~10M step with headroom under the 16.7M cap, independent of estimator
+  variance. Steps are atomic — full budget or revert — by contract design.
 - Default Anvil (30M block gas) fits every tx: steps ~10M, chunks ~3.5M.
   `preview (call)` simulates `runFrame` (~40M), so start Anvil with
   `--gas-limit 100000000`. The step loop is the way to actually play.

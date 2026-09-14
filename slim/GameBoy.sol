@@ -153,9 +153,6 @@ contract GameBoy is GbCpu {
                 done += c;
                 fr.frameCycles += c;
                 if (_crossed(fr)) frameDone = true;
-                // hard stop: always leave 1M for flush/return -> tx can never
-                // hit the EIP-7825 16.7M limit no matter the workload density
-                if (gasleft() < 1000000) break;
             }
         }
         ly = fr.ly;
@@ -181,6 +178,25 @@ contract GameBoy is GbCpu {
         )
     {
         return (regA, regF, regB, regC, regD, regE, regH, regL, regSP, regPC);
+    }
+
+    /// @dev PPU registers for off-chain renderers (readMem blanks IO, so the
+    ///      framebuffer cannot be reconstructed from readMem alone).
+    function ppuRegs()
+        external
+        view
+        returns (
+            uint8 lcdc,
+            uint8 scy,
+            uint8 scx,
+            uint8 bgp,
+            uint8 obp0,
+            uint8 obp1,
+            uint8 wy,
+            uint8 wx
+        )
+    {
+        return (regLCDC, regSCY, regSCX, regBGP, regOBP0, regOBP1, regWY, regWX);
     }
 
     /// @dev Read `len` RAM bytes (VRAM/WRAM/OAM/HRAM/ERAM/IE). ROM: use

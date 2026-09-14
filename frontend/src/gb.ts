@@ -15,22 +15,18 @@ import FactoryAbi from './abi/GameBoyFactory.json';
 
 export const CHUNK = 0x4000;
 export const STEP_BUDGET = 16000;
-// Explicit gas on step() txs: the contract's 1M-gas early-stop guard makes
-// on-chain execution succeed at ANY limit, so estimators converge to ~91k
-// (a few cycles) instead of the ~10M a full 16000-cycle step needs.
-// Never rely on estimation for step(); 16M stays under the 16.7M EIP-7825 cap.
+// Explicit gas on step() txs: 16M covers the worst-measured ~10M step with
+// headroom while staying under the 16.7M EIP-7825 cap, regardless of
+// estimator variance or state changes between estimate and mine. Steps are
+// atomic (full budget or revert), so the limit only needs to exceed the
+// worst case, not match it exactly.
 export const GAS_STEP = 16_000_000n;
-export const FB_W = 160;
-export const FB_H = 144;
-export const FB_LEN = FB_W * FB_H; // 23040, shades 0 (white)..3 (black)
+export { FB_H, FB_W, FB_LEN, FrameAssembler } from './assemble.ts';
+export type { Decoded } from './assemble.ts';
+import type { Decoded, FrameAssembler } from './assemble.ts';
 
 // bit0 A, bit1 B, bit2 Select, bit3 Start, bit4 Right, bit5 Left, bit6 Up, bit7 Down
 export const BTN = { A: 1, B: 2, SELECT: 4, START: 8, RIGHT: 16, LEFT: 32, UP: 64, DOWN: 128 } as const;
-
-export interface Decoded {
-  eventName?: string;
-  args?: any;
-}
 
 /** Decode receipt logs against an ABI, skipping foreign logs. */
 export function decodeLogs(abi: any, logs: Log[]): Decoded[] {
@@ -119,55 +115,6 @@ export async function uploadRom(
   });
   await publicClient.waitForTransactionReceipt({ hash: fin });
   onProgress?.(total, total);
-}
-
-/** Reassembles frames from Scanline/FrameDone events across step() receipts. */
-export class FrameAssembler {
-  private frames = new Map<string, { lines: Map<number, Uint8Array>; done: boolean }>();
-
-  /** Returns serial bytes seen in these logs. */
-  ingest(decoded: Decoded[]): number[] {
-    const serial: number[] = [];
-    for (const log of decoded) {
-      if (log.eventName === 'Scanline') {
-        const key = String(log.args.frame);
-        let e = this.frames.get(key);
-        if (!e) {
-          e = { lines: new Map(), done: false };
-          this.frames.set(key, e);
-        }
-        e.lines.set(Number(log.args.ly), hexToBytes(log.args.px as `0x${string}`));
-      } else if (log.eventName === 'FrameDone') {
-        const key = String(log.args.frame);
-        let e = this.frames.get(key);
-        if (!e) {
-          e = { lines: new Map(), done: false };
-          this.frames.set(key, e);
-        }
-        e.done = true;
-      } else if (log.eventName === 'SerialByte') {
-        serial.push(Number(log.args.b));
-      }
-    }
-    return serial;
-  }
-
-  takeCompleted(): { frame: bigint; fb: Uint8Array } | null {
-    for (const [key, e] of this.frames) {
-      if (!e.done) continue;
-      this.frames.delete(key);
-      const fb = new Uint8Array(FB_LEN);
-      for (const [ly, px] of e.lines) {
-        if (ly < FB_H) fb.set(px.slice(0, FB_W), ly * FB_W);
-      }
-      return { frame: BigInt(key), fb };
-    }
-    return null;
-  }
-
-  reset(): void {
-    this.frames.clear();
-  }
 }
 
 export interface AdvanceResult {

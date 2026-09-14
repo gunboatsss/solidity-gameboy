@@ -167,6 +167,20 @@ button:hover:not(:disabled) {
   overflow-y: auto;
 }
 
+.txbox {
+  list-style: none;
+  margin: 4px 0;
+  padding: 6px 8px;
+  height: 172px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #0a0d05;
+  font-size: 12px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
 progress {
   width: 100%;
   accent-color: var(--accent);
@@ -182,13 +196,15 @@ progress {
 
 .dpad {
   display: grid;
-  grid-template-columns: repeat(5, 44px);
-  gap: 4px;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 6px;
   margin: 10px 0;
 }
 
 .pad {
-  height: 40px;
+  width: 100%;
+  height: 56px;
+  font-size: 17px;
   user-select: none;
   -webkit-user-select: none;
   touch-action: none;

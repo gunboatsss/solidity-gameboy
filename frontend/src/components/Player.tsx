@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
+import type { Log } from 'viem';
 import type { Signer } from '../eth';
+import { publicClient } from '../eth';
+import GameBoyAbi from '../abi/GameBoy.json';
 import {
   BTN,
   FB_H,
   FB_W,
   FrameAssembler,
   advanceFrame,
+  decodeGameLogs,
   explainError,
   getOwner,
   getRegs,
@@ -51,6 +55,10 @@ export default function Player({ signer, game }: { signer: Signer | null; game: 
   const [err, setErr] = useState<string>('');
   const [note, setNote] = useState<string>('');
   const heldRef = useRef<number>(0);
+  // Single-painter rule: the advance path paints from receipts immediately;
+  // the log watcher only ever paints frames NEWER than this, so a lagging
+  // poll can never repaint a stale frame over a current one.
+  const paintedRef = useRef<bigint | null>(null);
   // Taps between slow frames would vanish (mask is read at frame start), so
   // every press also latches here until some frame/step consumes it.
   const pendingRef = useRef<number>(0);
@@ -58,7 +66,8 @@ export default function Player({ signer, game }: { signer: Signer | null; game: 
   const autoRef = useRef<boolean>(false);
   autoRef.current = auto;
 
-  // reset per-game state on switch
+  // reset per-game state on switch + compute the current framebuffer from
+  // on-chain state (instant, no txs)
   useEffect(() => {
     setFb(null);
     setFrameNo(null);
@@ -69,14 +78,46 @@ export default function Player({ signer, game }: { signer: Signer | null; game: 
     setErr('');
     setNote('');
     setTxs([]);
+    paintedRef.current = null;
     asm.reset();
-    if (game) {
-      getOwner(game).then(setOwner).catch(() => setOwner(null));
-      getRomSize(game)
-        .then(setRomSize)
-        .catch(() => setRomSize(null));
-    }
+    if (!game) return;
+    getOwner(game).then(setOwner).catch(() => setOwner(null));
+    getRomSize(game)
+      .then(setRomSize)
+      .catch(() => setRomSize(null));
+    readPpuState(game)
+      .then((st) => {
+        setFb(renderFrame(st));
+        setNote('computed from on-chain state — listening for new frames');
+      })
+      .catch(() => setNote('upload + finalize to boot, then frames render here'));
   }, [game, asm]);
+
+  // listen to emitted logs: repaint whenever any frame completes on-chain
+  // (own steps or anyone else's in crowdplay). Serial stays owned by the
+  // advance path to avoid double-counting shared receipts.
+  useEffect(() => {
+    if (!game) return;
+    const sub = new FrameAssembler();
+    const unwatch = publicClient.watchContractEvent({
+      address: game,
+      abi: GameBoyAbi,
+      pollingInterval: 500,
+      onLogs: (logs: Log[]) => {
+        sub.ingest(decodeGameLogs(logs));
+        const done = sub.takeCompleted();
+        if (done && (paintedRef.current === null || done.frame > paintedRef.current)) {
+          setFb(done.fb);
+          setFrameNo(done.frame);
+          paintedRef.current = done.frame;
+          getRegs(game)
+            .then(setRegs)
+            .catch(() => {});
+        }
+      },
+    });
+    return () => unwatch();
+  }, [game]);
 
   // paint framebuffer
   useEffect(() => {
@@ -158,6 +199,7 @@ export default function Player({ signer, game }: { signer: Signer | null; game: 
       );
       setFb(r.fb);
       setFrameNo(r.frame);
+      paintedRef.current = r.frame;
       setTxs(r.txs);
       await refreshRegs(game);
     } catch (e) {
@@ -190,6 +232,7 @@ export default function Player({ signer, game }: { signer: Signer | null; game: 
       if (r.completed) {
         setFb(r.completed.fb);
         setFrameNo(r.completed.frame);
+        paintedRef.current = r.completed.frame;
         await refreshRegs(game);
       } else {
         setNote(`step sent — frame still assembling (${r.hash.slice(0, 10)}…)`);
@@ -299,27 +342,27 @@ export default function Player({ signer, game }: { signer: Signer | null; game: 
           <option value="gray">gray</option>
         </select>
       </div>
-      {txs.length > 0 && (
-        <div className="small">
-          <span className="muted">frame txs ({txs.length}): </span>
-          <ul className="gamelist mono">
-            {txs.slice(-8).map((h) => (
-              <li key={h}>{h}</li>
-            ))}
-          </ul>
-        </div>
-      )}
       <div className="dpad">
         <div />
         {padButton('▲', BTN.UP)}
         <div />
+        {padButton('B', BTN.B)}
+        {padButton('A', BTN.A)}
         {padButton('◀', BTN.LEFT)}
         {padButton('▼', BTN.DOWN)}
         {padButton('▶', BTN.RIGHT)}
-        {padButton('B', BTN.B)}
-        {padButton('A', BTN.A)}
         {padButton('sel', BTN.SELECT)}
         {padButton('start', BTN.START)}
+      </div>
+      <div className="small">
+        <span className="muted">frame txs ({txs.length}):</span>
+        <ul className="mono txbox">
+          {txs.slice(-8).map((h) => (
+            <li key={h} title={h}>
+              {h.slice(0, 10)}…{h.slice(-8)}
+            </li>
+          ))}
+        </ul>
       </div>
       <p className="muted small">
         keys: arrows = d-pad · X = A · Z = B · shift = select · enter = start · held mask 0x

@@ -203,9 +203,6 @@ contract GameBoy is GbCpu {
                 done += c;
                 fr.frameCycles += c;
                 if (_crossed(fr)) frameDone = true;
-                // hard stop: always leave 1M for flush/return -> tx can never
-                // hit the EIP-7825 16.7M limit no matter the workload density
-                if (gasleft() < 1000000) break;
             }
         }
         ly = fr.ly;

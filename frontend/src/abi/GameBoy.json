@@ -52,6 +52,54 @@
   },
   {
     "type": "function",
+    "name": "ppuRegs",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "lcdc",
+        "type": "uint8",
+        "internalType": "uint8"
+      },
+      {
+        "name": "scy",
+        "type": "uint8",
+        "internalType": "uint8"
+      },
+      {
+        "name": "scx",
+        "type": "uint8",
+        "internalType": "uint8"
+      },
+      {
+        "name": "bgp",
+        "type": "uint8",
+        "internalType": "uint8"
+      },
+      {
+        "name": "obp0",
+        "type": "uint8",
+        "internalType": "uint8"
+      },
+      {
+        "name": "obp1",
+        "type": "uint8",
+        "internalType": "uint8"
+      },
+      {
+        "name": "wy",
+        "type": "uint8",
+        "internalType": "uint8"
+      },
+      {
+        "name": "wx",
+        "type": "uint8",
+        "internalType": "uint8"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "readMem",
     "inputs": [
       {

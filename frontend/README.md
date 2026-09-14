@@ -76,9 +76,10 @@ contract change (the live golden check fails loudly if they drift).
 
 ## Notes
 
-- **Step txs carry explicit gas (16M).** That covers the worst-measured
-  ~10M step with headroom under the 16.7M cap, independent of estimator
-  variance. Steps are atomic — full budget or revert — by contract design.
+- **Step txs carry explicit gas (16M on Anvil).** That covers the
+  worst-measured ~10M step with headroom under the 16.7M cap, independent
+  of estimator variance. Steps are atomic — full budget or revert — by
+  contract design.
 - Default Anvil (30M block gas) fits every tx: steps ~10M, chunks ~3.5M.
   `preview (call)` simulates `runFrame` (~40M), so start Anvil with
   `--gas-limit 100000000`. The step loop is the way to actually play.
@@ -88,3 +89,30 @@ contract change (the live golden check fails loudly if they drift).
 - ABIs in `src/abi/` are extracted from forge artifacts; refresh with
   `jq .abi out-slim/GameBoy.sol/GameBoy.json > frontend/src/abi/GameBoy.json`
   (same for the factory) after contract changes.
+
+## Monad
+
+- Local Monad-rule dev needs nightly Foundry: `anvil --network monad
+  --gas-limit 100000000`, and the `monad` foundry profile sets
+  `network = "monad"` for builds/tests/scripts.
+- Chain preset built in: set `VITE_CHAIN_ID=10143` (testnet RPC + MON
+  currency default in), deploy the factory there, fund via the faucet.
+  `VITE_GAMES_FROM_BLOCK` bounds the game-list log scan (Monad full nodes
+  limit history access); created/selected games are also cached in
+  localStorage, which stands in when history is unavailable.
+- `runFrame` (~41M measured) still exceeds per-tx caps, so stepping stays
+  mandatory — but the budget rises to `step(20000)` (~4 txs/frame).
+- Monad charges `gas_limit x price`, so steps use estimate + 25% (capped
+  29M) instead of Anvil's flat 16M — idle-heavy steps stop paying for
+  unused headroom. Reverted txs still pay the full limit, so the buffer
+  and the 20000-cycle contract cap both matter; estimation falls back to
+  16M if it ever fails.
+- Free wins, no code needed: hot Frame state is sequential packed slots,
+  so Monad warms one 128-slot storage page per tx instead of ~25 cold
+  slots; linear memory pricing favors the 32KB prefetch + 23KB framebuffer;
+  same-sender txs still execute in nonce order, so the pipelined bursts
+  stay correct. No precompiles used, nothing repriced against us.
+- The 128KB code limit fits the *full* (non-slim) build — but the
+  factory/crowdplay flow is slim-only (`GameBoy` there has `initialize`;
+  the full build's clones would be ownerless and unloadable). Port
+  `initialize` over or deploy single full games via `loadRom` chunks.

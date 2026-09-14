@@ -8,12 +8,12 @@ import {
 } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import type { Account, Chain, PublicClient, WalletClient } from 'viem';
-import { ANVIL_BURNER_KEY, CHAIN_ID, RPC_URL } from './config';
+import { ANVIL_BURNER_KEY, CHAIN_ID, RPC_URL, ACTIVE } from './config';
 
 export const chain: Chain = defineChain({
   id: CHAIN_ID,
-  name: CHAIN_ID === 31337 ? 'Anvil' : `Chain ${CHAIN_ID}`,
-  nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+  name: ACTIVE.name,
+  nativeCurrency: { name: ACTIVE.currency, symbol: ACTIVE.currency, decimals: 18 },
   rpcUrls: { default: { http: [RPC_URL] } },
 });
 

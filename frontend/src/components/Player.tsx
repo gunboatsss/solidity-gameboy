@@ -9,6 +9,7 @@ import {
   FB_H,
   FB_W,
   FrameAssembler,
+  STEP_BUDGET,
   advanceFrame,
   decodeGameLogs,
   explainError,
@@ -193,7 +194,7 @@ export default function Player({ signer, game }: { signer: Signer | null; game: 
         game,
         takeMask(),
         asm,
-        16000,
+        STEP_BUDGET,
         (bytes) => setSerial((s) => [...s, ...bytes]),
         setSteps,
       );
@@ -225,7 +226,7 @@ export default function Player({ signer, game }: { signer: Signer | null; game: 
     setBusy(true);
     setErr('');
     try {
-      const r = await stepOnce(signer, game, takeMask(), asm, 16000, (bytes) =>
+      const r = await stepOnce(signer, game, takeMask(), asm, STEP_BUDGET, (bytes) =>
         setSerial((s) => [...s, ...bytes]),
       );
       setTxs((t) => [...t.slice(-7), r.hash]);

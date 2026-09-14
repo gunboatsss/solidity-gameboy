@@ -9,18 +9,19 @@ import {
 import type { Log } from 'viem';
 import type { Signer } from './eth';
 import { chain, publicClient } from './eth';
-import { FACTORY_ADDRESS } from './config';
+import { ACTIVE, FACTORY_ADDRESS, GAMES_FROM_BLOCK } from './config';
 import GameBoyAbi from './abi/GameBoy.json';
 import FactoryAbi from './abi/GameBoyFactory.json';
 
 export const CHUNK = 0x4000;
-export const STEP_BUDGET = 16000;
-// Explicit gas on step() txs: 16M covers the worst-measured ~10M step with
-// headroom while staying under the 16.7M EIP-7825 cap, regardless of
-// estimator variance or state changes between estimate and mine. Steps are
-// atomic (full budget or revert), so the limit only needs to exceed the
-// worst case, not match it exactly.
+export const STEP_BUDGET = ACTIVE.stepBudget;
+// Fixed step gas (Anvil/Ethereum default): 16M covers the worst-measured
+// ~10M step with headroom while staying under the 16.7M EIP-7825 cap.
+// Steps are atomic (full budget or revert), so the limit only needs to
+// exceed the worst case, not match it exactly.
 export const GAS_STEP = 16_000_000n;
+// Upper bound for estimated step gas: stays clear of per-tx caps with margin.
+const GAS_CAP = 29_000_000n;
 export { FB_H, FB_W, FB_LEN, FrameAssembler } from './assemble.ts';
 export type { Decoded } from './assemble.ts';
 import type { Decoded, FrameAssembler } from './assemble.ts';
@@ -56,18 +57,76 @@ export interface GameInfo {
   romHash: `0x${string}`;
 }
 
+const LS_GAMES = 'sgb.games';
+
+function readGameCache(): GameInfo[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(LS_GAMES) ?? '[]') as unknown;
+    if (!Array.isArray(raw)) return [];
+    return raw.filter(
+      (g): g is GameInfo =>
+        typeof g === 'object' && g !== null && typeof (g as GameInfo).game === 'string',
+    );
+  } catch {
+    return [];
+  }
+}
+
+export function cacheGame(game: `0x${string}`, creator: `0x${string}`): void {
+  try {
+    const cur = readGameCache().filter((g) => g.game.toLowerCase() !== game.toLowerCase());
+    cur.push({ game, creator, romHash: '0x0000000000000000000000000000000000000000000000000000000000000000' });
+    localStorage.setItem(LS_GAMES, JSON.stringify(cur.slice(-50)));
+  } catch {
+    /* private mode etc: list stays on-chain only */
+  }
+}
+
 export async function listGames(): Promise<GameInfo[]> {
-  const logs = await publicClient.getLogs({
-    address: FACTORY_ADDRESS,
-    event: GAME_CREATED,
-    fromBlock: 0n,
-    toBlock: 'latest',
-  });
-  return logs.map((l) => ({
-    game: l.args.game as `0x${string}`,
-    creator: l.args.creator as `0x${string}`,
-    romHash: l.args.romHash as `0x${string}`,
-  }));
+  const seen = new Map<string, GameInfo>();
+  for (const g of readGameCache()) seen.set(g.game.toLowerCase(), g);
+  try {
+    const logs = await publicClient.getLogs({
+      address: FACTORY_ADDRESS,
+      event: GAME_CREATED,
+      fromBlock: GAMES_FROM_BLOCK ?? 0n,
+      toBlock: 'latest',
+    });
+    for (const l of logs) {
+      const g = {
+        game: l.args.game as `0x${string}`,
+        creator: l.args.creator as `0x${string}`,
+        romHash: l.args.romHash as `0x${string}`,
+      };
+      seen.set(g.game.toLowerCase(), g);
+    }
+  } catch {
+    /* history unavailable (e.g. Monad full-node limits): cache stands in */
+  }
+  return [...seen.values()];
+}
+
+/** Step gas for one tx. Fixed chains send the deterministic budget; chains
+ *  that charge gas_limit x price (Monad) estimate + 25% buffer instead, so
+ *  idle-heavy steps don't pay for unused headroom. Falls back to fixed. */
+export async function resolveStepGas(
+  signer: Signer,
+  game: `0x${string}`,
+  budget: number,
+  buttons: number,
+): Promise<bigint> {
+  if (ACTIVE.gasStrategy !== 'estimate') return GAS_STEP;
+  try {
+    const est = await publicClient.estimateGas({
+      account: signer.account,
+      to: game,
+      data: encodeFunctionData({ abi: GameBoyAbi, functionName: 'step', args: [budget, buttons] }),
+    });
+    const bumped = (est * 5n) / 4n;
+    return bumped > GAS_CAP ? GAS_CAP : bumped;
+  } catch {
+    return GAS_STEP;
+  }
 }
 
 export async function createGame(signer: Signer): Promise<{ game: `0x${string}`; hash: `0x${string}` }> {
@@ -145,7 +204,7 @@ export async function stepOnce(
     args: [budget, buttons],
     account: signer.account,
     chain,
-    gas: GAS_STEP,
+    gas: await resolveStepGas(signer, game, budget, buttons),
   });
   const rcpt = await publicClient.waitForTransactionReceipt({ hash });
   const serial = asm.ingest(decodeGameLogs(rcpt.logs));
@@ -172,6 +231,7 @@ export async function advanceFrame(
   const MAX_BURSTS = 3;
   const txs: `0x${string}`[] = [];
   const data = encodeFunctionData({ abi: GameBoyAbi, functionName: 'step', args: [budget, buttons] });
+  const gas = await resolveStepGas(signer, game, budget, buttons);
   let sent = 0;
   for (let b = 0; b < MAX_BURSTS; b++) {
     let nonce = await publicClient.getTransactionCount({ address: signer.address, blockTag: 'pending' });
@@ -183,7 +243,7 @@ export async function advanceFrame(
           to: game,
           data,
           chain,
-          gas: GAS_STEP,
+          gas,
           nonce: nonce++,
         }),
       );

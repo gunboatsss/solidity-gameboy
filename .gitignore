@@ -2,6 +2,7 @@
 cache/
 out/
 out-slim/
+out-monad/
 
 # Commonly ignored directories
 .logs/

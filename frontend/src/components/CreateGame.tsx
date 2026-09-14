@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { Signer } from '../eth';
 import { FACTORY_ADDRESS, IMPL_ADDRESS, isConfigured } from '../config';
-import { createGame, explainError, listGames, uploadRom } from '../gb';
+import { createGame, cacheGame, explainError, listGames, uploadRom } from '../gb';
 import type { GameInfo } from '../gb';
 
 export default function CreateGame({
@@ -50,6 +50,7 @@ export default function CreateGame({
     try {
       setPhase('factory.create()…');
       const { game } = await createGame(signer);
+      cacheGame(game, signer.address);
       setPhase(`uploading ${buf.length} bytes in 16KB chunks…`);
       await uploadRom(signer, game, buf, (d, t) => setProgress([d, t]));
       setPhase('finalizing… done');
@@ -113,7 +114,13 @@ export default function CreateGame({
       <ul className="gamelist">
         {games.map((g) => (
           <li key={g.game}>
-            <button className="linklike mono" onClick={() => onSelect(g.game)}>
+            <button
+              className="linklike mono"
+              onClick={() => {
+                cacheGame(g.game, g.creator);
+                onSelect(g.game);
+              }}
+            >
               {g.game}
             </button>
           </li>

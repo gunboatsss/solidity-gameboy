@@ -36,7 +36,7 @@ frame) copies full state — fine off-chain, but poll sparingly in tests.
 `slim/` is a separate copy of the emulator, stripped for EIP-170
 deployability. Build/test it with `FOUNDRY_PROFILE=deploy forge build|test`.
 
-- **23,177 → 24,062 bytes** runtime (514 under the limit, step support included).
+- **23,177 → 24,193 bytes** runtime (383 under the limit, step support included).
 - SSTORE2 ROM only, chunked 16KB stores + finalize (no direct ROM boot, no
   storage ROM, no storage chunks).
 - `runFrame` (one tx = one frame, ~40M gas) AND `step(maxCycles, buttons)`
@@ -52,6 +52,23 @@ Validation (separate suite under `slim/test/`, 24 tests): frame/PPU/
 interrupts/serial/stepping/gas-cap/input units, chunked-upload + factory
 curator flows, all 20 PPU goldens (identical pixels to the full
 build), Blargg `01-special` + `02-interrupts` passing.
+
+## Monad build (`monad/`, 128KB code limit)
+
+`monad/` is the full emulator (storage + SSTORE2 ROM, `getState`, helper)
+with the factory init flow ported: bricked constructor, owner-claim
+`initialize()`, `regs()`/`ppuRegs()`/`readMem()`/`romStore()`/`romSize()`
+views — a strict superset of the slim API, so the frontend speaks it
+unchanged. Build/test with `FOUNDRY_PROFILE=monad forge build|test`.
+
+- **30,718 bytes** runtime (~100KB under Monad's 131,072 limit).
+- Requires nightly Foundry with Monad support: `[profile.monad]` sets
+  `network = "monad"`; run local chains as `anvil --network monad`.
+  (Stable 1.7.x rejects the 30KB deploy with the 24KB size error.)
+- stepping stays mandatory (`runFrame` ~41M > 30M/tx); budget rises to
+  `step(20000)`. Validation: 13 tests (factory/init/bricked-impl guards,
+  both upload paths, stepping, serial, views, helper snapshot, real ROM).
+- Deploy: `script/DeployMonad.s.sol` (writes `frontend/.env`).
 
 ## Execution under EIP-7825 (16,777,216 gas/tx)
 

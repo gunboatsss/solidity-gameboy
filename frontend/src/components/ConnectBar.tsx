@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { connectBurner, connectInjected, getBalance, getChainId } from '../eth';
 import type { Signer } from '../eth';
-import { CHAIN_ID, RPC_URL } from '../config';
+import { CHAIN_ID, RPC_URL, ACTIVE } from '../config';
 import { explainError } from '../gb';
 
 export default function ConnectBar({
@@ -53,7 +53,7 @@ export default function ConnectBar({
           <>
             <code className="mono">{signer.address}</code>
             <span className="muted">
-              {signer.kind} · {balance} ETH
+              {signer.kind} · {balance} {ACTIVE.currency}
             </span>
             <button onClick={() => onSigner(null)}>disconnect</button>
           </>
